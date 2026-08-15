@@ -86,14 +86,15 @@ type SkillDiscoveryProvider interface {
 // skills directory only when generic skills are supported. This function does
 // not inspect or create filesystem paths.
 func SkillDiscoveryRoots(adapter Adapter, homeDir string) []SkillDiscoveryRoot {
+	if !adapter.SupportsSkills() {
+		return nil
+	}
+
 	if provider, ok := adapter.(SkillDiscoveryProvider); ok {
 		roots := provider.SkillDiscovery(homeDir).Roots
 		return append([]SkillDiscoveryRoot(nil), roots...)
 	}
 
-	if !adapter.SupportsSkills() {
-		return nil
-	}
 	if skillsDir := adapter.SkillsDir(homeDir); skillsDir != "" {
 		return []SkillDiscoveryRoot{{
 			Scope: SkillDiscoveryNativeGlobal,

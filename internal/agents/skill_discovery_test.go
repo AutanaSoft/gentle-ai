@@ -42,6 +42,16 @@ func TestSkillDiscoveryRootsFallback(t *testing.T) {
 			name:    "adapter without generic skills support has no roots",
 			adapter: skillDiscoveryFallbackAdapter{supportsSkills: false, skillsDir: "/home/test/.native/skills"},
 		},
+		{
+			name: "disabled generic skills reject optional provider roots",
+			adapter: skillDiscoveryUnsupportedProviderAdapter{
+				Adapter: pi.NewAdapter(),
+				roots: SkillDiscoveryCapabilities{Roots: []SkillDiscoveryRoot{{
+					Scope: SkillDiscoverySharedGlobal,
+					Path:  "/home/test/.agents/skills",
+				}}},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -67,14 +77,12 @@ func TestSkillDiscoveryAdapterMatrix(t *testing.T) {
 		wantSkills   bool
 	}{
 		{
-			name:         "Codex declares native then shared roots",
-			adapter:      codex.NewAdapter(),
-			wantAgent:    model.AgentCodex,
-			wantProvider: true,
-			wantSkills:   true,
+			name:       "Codex uses native fallback only",
+			adapter:    codex.NewAdapter(),
+			wantAgent:  model.AgentCodex,
+			wantSkills: true,
 			wantRoots: []SkillDiscoveryRoot{
 				{Scope: SkillDiscoveryNativeGlobal, Path: native(".codex", "skills")},
-				{Scope: SkillDiscoverySharedGlobal, Path: shared},
 			},
 		},
 		{
@@ -89,57 +97,52 @@ func TestSkillDiscoveryAdapterMatrix(t *testing.T) {
 			},
 		},
 		{
-			name:         "Gemini CLI declares native then shared roots",
+			name:         "Gemini CLI declares shared then native roots",
 			adapter:      gemini.NewAdapter(),
 			wantAgent:    model.AgentGeminiCLI,
 			wantProvider: true,
 			wantSkills:   true,
 			wantRoots: []SkillDiscoveryRoot{
-				{Scope: SkillDiscoveryNativeGlobal, Path: native(".gemini", "skills")},
 				{Scope: SkillDiscoverySharedGlobal, Path: shared},
+				{Scope: SkillDiscoveryNativeGlobal, Path: native(".gemini", "skills")},
 			},
 		},
 		{
-			name:         "Cursor declares native then shared roots",
-			adapter:      cursor.NewAdapter(),
-			wantAgent:    model.AgentCursor,
-			wantProvider: true,
-			wantSkills:   true,
+			name:       "Cursor uses native fallback only",
+			adapter:    cursor.NewAdapter(),
+			wantAgent:  model.AgentCursor,
+			wantSkills: true,
 			wantRoots: []SkillDiscoveryRoot{
 				{Scope: SkillDiscoveryNativeGlobal, Path: native(".cursor", "skills")},
-				{Scope: SkillDiscoverySharedGlobal, Path: shared},
 			},
 		},
 		{
-			name:         "VS Code Copilot declares native then shared roots",
-			adapter:      vscode.NewAdapter(),
-			wantAgent:    model.AgentVSCodeCopilot,
-			wantProvider: true,
-			wantSkills:   true,
+			name:       "VS Code Copilot uses native fallback only",
+			adapter:    vscode.NewAdapter(),
+			wantAgent:  model.AgentVSCodeCopilot,
+			wantSkills: true,
 			wantRoots: []SkillDiscoveryRoot{
 				{Scope: SkillDiscoveryNativeGlobal, Path: native(".copilot", "skills")},
-				{Scope: SkillDiscoverySharedGlobal, Path: shared},
 			},
 		},
 		{
-			name:         "Windsurf declares native then shared roots",
-			adapter:      windsurf.NewAdapter(),
-			wantAgent:    model.AgentWindsurf,
-			wantProvider: true,
-			wantSkills:   true,
+			name:       "Windsurf uses native fallback only",
+			adapter:    windsurf.NewAdapter(),
+			wantAgent:  model.AgentWindsurf,
+			wantSkills: true,
 			wantRoots: []SkillDiscoveryRoot{
 				{Scope: SkillDiscoveryNativeGlobal, Path: native(".codeium", "windsurf", "skills")},
-				{Scope: SkillDiscoverySharedGlobal, Path: shared},
 			},
 		},
 		{
-			name:         "Kimi declares configured then shared roots",
+			name:         "Kimi declares native then shared roots",
 			adapter:      kimi.NewAdapter(),
 			wantAgent:    model.AgentKimi,
 			wantProvider: true,
 			wantSkills:   true,
 			wantRoots: []SkillDiscoveryRoot{
-				{Scope: SkillDiscoveryNativeGlobal, Path: native(".config", "agents", "skills")},
+				{Scope: SkillDiscoveryNativeGlobal, Path: native(".kimi", "skills")},
+				{Scope: SkillDiscoverySharedGlobal, Path: native(".config", "agents", "skills")},
 				{Scope: SkillDiscoverySharedGlobal, Path: shared},
 			},
 		},
@@ -190,14 +193,14 @@ func TestSkillDiscoveryAdapterMatrix(t *testing.T) {
 			wantRoots:  []SkillDiscoveryRoot{{Scope: SkillDiscoveryNativeGlobal, Path: native(".hermes", "skills")}},
 		},
 		{
-			name:       "Kilo Code has no shared declaration",
+			name:       "Kilo Code uses native fallback only",
 			adapter:    kilocode.NewAdapter(),
 			wantAgent:  model.AgentKilocode,
 			wantSkills: true,
 			wantRoots:  []SkillDiscoveryRoot{{Scope: SkillDiscoveryNativeGlobal, Path: native(".config", "kilo", "skills")}},
 		},
 		{
-			name:       "Trae IDE has no shared declaration",
+			name:       "Trae IDE uses native fallback only",
 			adapter:    trae.NewAdapter(),
 			wantAgent:  model.AgentTrae,
 			wantSkills: true,
@@ -239,4 +242,15 @@ type skillDiscoveryFallbackAdapter struct {
 func (a skillDiscoveryFallbackAdapter) SupportsSkills() bool { return a.supportsSkills }
 func (a skillDiscoveryFallbackAdapter) SkillsDir(string) string {
 	return a.skillsDir
+}
+
+type skillDiscoveryUnsupportedProviderAdapter struct {
+	Adapter
+	roots SkillDiscoveryCapabilities
+}
+
+func (a skillDiscoveryUnsupportedProviderAdapter) SupportsSkills() bool { return false }
+
+func (a skillDiscoveryUnsupportedProviderAdapter) SkillDiscovery(string) SkillDiscoveryCapabilities {
+	return a.roots
 }
