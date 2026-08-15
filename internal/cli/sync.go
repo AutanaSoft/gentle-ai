@@ -484,6 +484,7 @@ type syncRuntime struct {
 	agentIDs             []model.AgentID
 	backupRoot           string
 	state                *runtimeState
+	skillInventory       *routedSkillInventory
 	managedPaths         []string
 	changedFiles         []string // accumulates candidate paths reported by component injectors
 	backgroundPolicy     bool
@@ -495,25 +496,35 @@ func newSyncRuntime(homeDir string, selection model.Selection) (*syncRuntime, er
 	backupRoot := filepath.Join(homeDir, ".gentle-ai", "backups")
 	workspaceDir, _ := os.Getwd()
 	workspaceDir = resolveOpenClawWorkspaceDir(homeDir, workspaceDir, selection.Agents)
-	compatibilityTransaction, err := newCompatibilityRefreshTransaction(homeDir, selection.Components, selection)
+	adapters := resolveAdapters(selection.Agents)
+	skillInventory, err := buildRoutedSkillInventory(homeDir, ScopeGlobal, selection, adapters)
+	if err != nil {
+		return nil, err
+	}
+	compatibilityComponents := selection.Components
+	if skillInventory.bypassesCompatibilityRefresh() {
+		compatibilityComponents = nil
+	}
+	compatibilityTransaction, err := newCompatibilityRefreshTransaction(homeDir, compatibilityComponents, selection)
 	if err != nil {
 		return nil, err
 	}
 
 	runtime := &syncRuntime{
-		homeDir:      homeDir,
-		workspaceDir: workspaceDir,
-		selection:    selection,
-		agentIDs:     selection.Agents,
-		backupRoot:   backupRoot,
-		state:        &runtimeState{compatibilityTransaction: compatibilityTransaction},
+		homeDir:        homeDir,
+		workspaceDir:   workspaceDir,
+		selection:      selection,
+		agentIDs:       selection.Agents,
+		backupRoot:     backupRoot,
+		state:          &runtimeState{compatibilityTransaction: compatibilityTransaction},
+		skillInventory: skillInventory,
 	}
 	return runtime, nil
 }
 
 func (r *syncRuntime) stagePlan() pipeline.StagePlan {
 	adapters := resolveAdapters(r.agentIDs)
-	targets, targetErr := syncBackupTargets(r.homeDir, r.workspaceDir, r.selection, adapters)
+	targets, targetErr := syncBackupTargetsWithSkillInventory(r.homeDir, r.workspaceDir, r.selection, adapters, r.skillInventory)
 	r.managedPaths = targets
 
 	prepare := []pipeline.Step{
@@ -548,9 +559,10 @@ func (r *syncRuntime) stagePlan() pipeline.StagePlan {
 			selection:        r.selection,
 			changedFiles:     &r.changedFiles,
 			backgroundPolicy: r.backgroundPolicy,
+			skillInventory:   r.skillInventory,
 		})
 	}
-	if needsCompatibilitySkillsRefresh(r.selection.Components) {
+	if needsCompatibilitySkillsRefresh(r.selection.Components) && !r.skillInventory.bypassesCompatibilityRefresh() {
 		apply = append(apply, compatibilitySkillsRefreshStep{
 			id:           "sync:compatibility-skills-refresh",
 			homeDir:      r.homeDir,
@@ -615,9 +627,13 @@ func (r *syncRuntime) stagePlan() pipeline.StagePlan {
 // failed persona switch can be rolled back (verification still declares only
 // the selected file).
 func syncBackupTargets(homeDir, workspaceDir string, selection model.Selection, adapters []agents.Adapter) ([]string, error) {
+	return syncBackupTargetsWithSkillInventory(homeDir, workspaceDir, selection, adapters, nil)
+}
+
+func syncBackupTargetsWithSkillInventory(homeDir, workspaceDir string, selection model.Selection, adapters []agents.Adapter, skillInventory *routedSkillInventory) ([]string, error) {
 	paths := map[string]struct{}{}
 	for _, component := range selection.Components {
-		for _, path := range syncComponentPathsWithWorkspace(homeDir, workspaceDir, selection, adapters, component) {
+		for _, path := range syncComponentPathsWithWorkspaceAndSkillInventory(homeDir, workspaceDir, selection, adapters, component, skillInventory) {
 			paths[path] = struct{}{}
 		}
 		if component == model.ComponentContext7 {
@@ -664,14 +680,14 @@ func syncBackupTargets(homeDir, workspaceDir string, selection model.Selection, 
 			paths[filepath.Join(pluginsDir, name)] = struct{}{}
 		}
 	}
-	adapterSkillPaths, err := syncAdapterSkillBackupTargets(homeDir, workspaceDir, selection, adapters)
+	adapterSkillPaths, err := syncAdapterSkillBackupTargetsWithSkillInventory(homeDir, workspaceDir, selection, adapters, skillInventory)
 	if err != nil {
 		return nil, err
 	}
 	for _, path := range adapterSkillPaths {
 		paths[path] = struct{}{}
 	}
-	if !usesAnchoredCompatibilityTransaction() && needsCompatibilitySkillsRefresh(selection.Components) {
+	if !usesAnchoredCompatibilityTransaction() && needsCompatibilitySkillsRefresh(selection.Components) && !skillInventory.bypassesCompatibilityRefresh() {
 		skillDir, ok, err := compatibilitySkillsDir(homeDir)
 		if err != nil {
 			return nil, err
@@ -709,9 +725,16 @@ func syncBackupTargets(homeDir, workspaceDir string, selection model.Selection, 
 }
 
 func syncAdapterSkillBackupTargets(homeDir, workspaceDir string, selection model.Selection, adapters []agents.Adapter) ([]string, error) {
+	return syncAdapterSkillBackupTargetsWithSkillInventory(homeDir, workspaceDir, selection, adapters, nil)
+}
+
+func syncAdapterSkillBackupTargetsWithSkillInventory(homeDir, workspaceDir string, selection model.Selection, adapters []agents.Adapter, skillInventory *routedSkillInventory) ([]string, error) {
 	var paths []string
 	for _, adapter := range adapters {
 		if !adapter.SupportsSkills() {
+			continue
+		}
+		if skillInventory.hasAgent(adapter.Agent()) {
 			continue
 		}
 		if slices.Contains(selection.Components, model.ComponentSkills) {
@@ -753,10 +776,14 @@ func syncComponentPaths(homeDir string, selection model.Selection, adapters []ag
 }
 
 func syncComponentPathsWithWorkspace(homeDir, workspaceDir string, selection model.Selection, adapters []agents.Adapter, component model.ComponentID) []string {
+	return syncComponentPathsWithWorkspaceAndSkillInventory(homeDir, workspaceDir, selection, adapters, component, nil)
+}
+
+func syncComponentPathsWithWorkspaceAndSkillInventory(homeDir, workspaceDir string, selection model.Selection, adapters []agents.Adapter, component model.ComponentID, skillInventory *routedSkillInventory) []string {
 	if component == model.ComponentPersona {
 		return syncPersonaPathsWithWorkspace(homeDir, workspaceDir, selection, adapters)
 	}
-	return componentPathsWithWorkspace(homeDir, workspaceDir, selection, adapters, component)
+	return componentPathsWithWorkspaceScopedWithSkillInventory(homeDir, workspaceDir, ScopeGlobal, selection, adapters, component, skillInventory)
 }
 
 // syncPersonaPaths returns the file paths that ComponentPersona writes during
@@ -826,6 +853,7 @@ type componentSyncStep struct {
 	changedFiles *[]string // accumulates absolute paths of files that actually changed
 
 	backgroundPolicy bool
+	skillInventory   *routedSkillInventory
 }
 
 type codeGraphGuidanceSyncStep struct {
@@ -1090,6 +1118,9 @@ func (s componentSyncStep) Run() error {
 				Profiles:                           profiles,
 				CodeGraphGuidanceMarkdown:          codeGraphGuidanceMarkdownForSDD(s.homeDir, s.selection.CommunityTools),
 			}
+			if s.skillInventory.hasAgent(adapter.Agent()) {
+				opts.SkipSkillFiles = true
+			}
 			opts.IncludeOpenCodeBackgroundPolicy = s.backgroundPolicy && adapter.Agent() == model.AgentOpenCode
 			inject := sdd.Inject
 			if s.backgroundPolicy {
@@ -1100,6 +1131,13 @@ func (s componentSyncStep) Run() error {
 				return fmt.Errorf("sync sdd for %q: %w", adapter.Agent(), err)
 			}
 			s.countChanged(boolToInt(res.Changed), res.Files...)
+			if s.skillInventory.hasAgent(adapter.Agent()) {
+				routed, routedErr := s.skillInventory.injectSDD(adapter.Agent(), opts.Capability)
+				if routedErr != nil {
+					return fmt.Errorf("sync routed SDD skills for %q: %w", adapter.Agent(), routedErr)
+				}
+				s.countChanged(boolToInt(routed.Changed), routed.Files...)
+			}
 		}
 		return nil
 
@@ -1109,6 +1147,14 @@ func (s componentSyncStep) Run() error {
 			return nil
 		}
 		for _, adapter := range adapters {
+			if s.skillInventory.hasAgent(adapter.Agent()) {
+				routed, routedErr := s.skillInventory.injectOrdinary(adapter.Agent())
+				if routedErr != nil {
+					return fmt.Errorf("sync routed skills for %q: %w", adapter.Agent(), routedErr)
+				}
+				s.countChanged(boolToInt(routed.Changed), routed.Files...)
+				continue
+			}
 			res, err := skills.Inject(componentInjectionDir(s.homeDir, s.workspaceDir, adapter), adapter, skillIDs)
 			if err != nil {
 				return fmt.Errorf("sync skills for %q: %w", adapter.Agent(), err)
@@ -1607,7 +1653,7 @@ func runSyncWithSelection(homeDir string, selection model.Selection, background 
 	}
 
 	// Post-apply verification reuses the same component paths as install.
-	result.Verify = runPostSyncVerification(homeDir, rt.workspaceDir, selection)
+	result.Verify = runPostSyncVerificationWithSkillInventory(homeDir, rt.workspaceDir, selection, rt.skillInventory)
 	result.Verify = withFailedSyncVerificationNote(result.Verify)
 	result.BackgroundPolicyEnabled = rt.runtimeReady && background.Effective == model.OpenCodeBackgroundOn
 	if background.activationPlan != nil {
@@ -2004,11 +2050,15 @@ func withFailedSyncVerificationNote(report verify.Report) verify.Report {
 
 // runPostSyncVerification verifies that managed files exist after sync.
 func runPostSyncVerification(homeDir, workspaceDir string, selection model.Selection) verify.Report {
+	return runPostSyncVerificationWithSkillInventory(homeDir, workspaceDir, selection, nil)
+}
+
+func runPostSyncVerificationWithSkillInventory(homeDir, workspaceDir string, selection model.Selection, skillInventory *routedSkillInventory) verify.Report {
 	checks := make([]verify.Check, 0)
 	adapters := resolveAdapters(selection.Agents)
 
 	for _, component := range selection.Components {
-		for _, path := range syncComponentPathsWithWorkspace(homeDir, workspaceDir, selection, adapters, component) {
+		for _, path := range syncComponentPathsWithWorkspaceAndSkillInventory(homeDir, workspaceDir, selection, adapters, component, skillInventory) {
 			currentPath := path
 			if isLegacyOpenCodeBackgroundAgentsPlugin(currentPath) {
 				checks = append(checks, verify.Check{

@@ -217,12 +217,13 @@ func RunInstall(args []string, detection system.DetectionResult) (InstallResult,
 	}
 	result.PiCodeGraph = runtime.state.piCodeGraph
 	result.Verify = runPostApplyVerification(postApplyVerificationInput{
-		HomeDir:      homeDir,
-		WorkspaceDir: runtime.workspaceDir,
-		Scope:        input.Scope,
-		Selection:    input.Selection,
-		Resolved:     resolved,
-		State:        runtime.state,
+		HomeDir:        homeDir,
+		WorkspaceDir:   runtime.workspaceDir,
+		Scope:          input.Scope,
+		Selection:      input.Selection,
+		Resolved:       resolved,
+		State:          runtime.state,
+		SkillInventory: runtime.skillInventory,
 	})
 	result.Verify = withPostInstallNotes(result.Verify, resolved)
 	result.Verify = withOpenCodeBackgroundPending(result.Verify, background, runtime.runtimeReady, resolved.Agents)
@@ -614,15 +615,16 @@ func buildStagePlan(selection model.Selection, resolved planner.ResolvedPlan) pi
 }
 
 type installRuntime struct {
-	homeDir      string
-	workspaceDir string
-	scope        InstallScope
-	selection    model.Selection
-	resolved     planner.ResolvedPlan
-	profile      system.PlatformProfile
-	channel      InstallChannel
-	backupRoot   string
-	state        *runtimeState
+	homeDir        string
+	workspaceDir   string
+	scope          InstallScope
+	selection      model.Selection
+	resolved       planner.ResolvedPlan
+	profile        system.PlatformProfile
+	channel        InstallChannel
+	backupRoot     string
+	state          *runtimeState
+	skillInventory *routedSkillInventory
 
 	background           OpenCodeBackgroundResolution
 	runtimeReady         bool
@@ -675,8 +677,17 @@ func (s *runtimeState) compatibilityChangedFiles() []string {
 }
 
 func newInstallRuntime(homeDir string, scope InstallScope, channel InstallChannel, selection model.Selection, resolved planner.ResolvedPlan, profile system.PlatformProfile) (*installRuntime, error) {
+	adapters := resolveAdapters(resolved.Agents)
+	skillInventory, err := buildRoutedSkillInventory(homeDir, scope, selection, adapters)
+	if err != nil {
+		return nil, err
+	}
 	backupRoot := filepath.Join(homeDir, ".gentle-ai", "backups")
-	compatibilityTransaction, err := newCompatibilityRefreshTransaction(homeDir, resolved.OrderedComponents, selection)
+	compatibilityComponents := resolved.OrderedComponents
+	if skillInventory.bypassesCompatibilityRefresh() {
+		compatibilityComponents = nil
+	}
+	compatibilityTransaction, err := newCompatibilityRefreshTransaction(homeDir, compatibilityComponents, selection)
 	if err != nil {
 		return nil, err
 	}
@@ -690,20 +701,21 @@ func newInstallRuntime(homeDir string, scope InstallScope, channel InstallChanne
 	workspaceDir = resolveOpenClawWorkspaceDir(homeDir, workspaceDir, resolved.Agents)
 
 	return &installRuntime{
-		homeDir:      homeDir,
-		workspaceDir: workspaceDir,
-		scope:        scope,
-		selection:    selection,
-		resolved:     resolved,
-		profile:      profile,
-		channel:      channel,
-		backupRoot:   backupRoot,
-		state:        state,
+		homeDir:        homeDir,
+		workspaceDir:   workspaceDir,
+		scope:          scope,
+		selection:      selection,
+		resolved:       resolved,
+		profile:        profile,
+		channel:        channel,
+		backupRoot:     backupRoot,
+		state:          state,
+		skillInventory: skillInventory,
 	}, nil
 }
 
 func (r *installRuntime) stagePlan() pipeline.StagePlan {
-	targets, targetErr := backupTargets(r.homeDir, r.workspaceDir, r.scope, r.selection, r.resolved)
+	targets, targetErr := backupTargetsWithSkillInventory(r.homeDir, r.workspaceDir, r.scope, r.selection, r.resolved, r.skillInventory)
 	prepare := []pipeline.Step{
 		checkDependenciesStep{id: "prepare:check-dependencies", profile: r.profile, homeDir: r.homeDir, selection: r.selection},
 		prepareBackupStep{
@@ -751,16 +763,17 @@ func (r *installRuntime) stagePlan() pipeline.StagePlan {
 
 	for _, component := range r.resolved.OrderedComponents {
 		step := componentApplyStep{
-			id:           "component:" + string(component),
-			component:    component,
-			homeDir:      r.homeDir,
-			workspaceDir: r.workspaceDir,
-			scope:        r.scope,
-			agents:       r.resolved.Agents,
-			selection:    r.selection,
-			profile:      r.profile,
-			channel:      r.channel,
-			state:        r.state,
+			id:             "component:" + string(component),
+			component:      component,
+			homeDir:        r.homeDir,
+			workspaceDir:   r.workspaceDir,
+			scope:          r.scope,
+			agents:         r.resolved.Agents,
+			selection:      r.selection,
+			profile:        r.profile,
+			channel:        r.channel,
+			state:          r.state,
+			skillInventory: r.skillInventory,
 		}
 		step.backgroundPolicy = r.backgroundActivation != nil && r.backgroundActivation.Capability().Ready() && r.background.Effective == model.OpenCodeBackgroundOn
 		apply = append(apply, step)
@@ -780,7 +793,7 @@ func (r *installRuntime) stagePlan() pipeline.StagePlan {
 		})
 	}
 
-	if needsCompatibilitySkillsRefresh(r.resolved.OrderedComponents) {
+	if needsCompatibilitySkillsRefresh(r.resolved.OrderedComponents) && !r.skillInventory.bypassesCompatibilityRefresh() {
 		apply = append(apply, compatibilitySkillsRefreshStep{
 			id:          "component:compatibility-skills-refresh",
 			homeDir:     r.homeDir,
@@ -1299,16 +1312,17 @@ func (s kimiSystemPromptHubStep) Run() error {
 }
 
 type componentApplyStep struct {
-	id           string
-	component    model.ComponentID
-	homeDir      string
-	workspaceDir string
-	scope        InstallScope
-	agents       []model.AgentID
-	selection    model.Selection
-	profile      system.PlatformProfile
-	channel      InstallChannel
-	state        *runtimeState
+	id             string
+	component      model.ComponentID
+	homeDir        string
+	workspaceDir   string
+	scope          InstallScope
+	agents         []model.AgentID
+	selection      model.Selection
+	profile        system.PlatformProfile
+	channel        InstallChannel
+	state          *runtimeState
+	skillInventory *routedSkillInventory
 
 	backgroundPolicy bool
 }
@@ -1654,9 +1668,17 @@ func (s componentApplyStep) Run() error {
 				Profiles:                    s.selection.Profiles,
 				CodeGraphGuidanceMarkdown:   codeGraphGuidanceMarkdownForSDD(s.homeDir, s.selection.CommunityTools),
 			}
+			if s.skillInventory.hasAgent(adapter.Agent()) {
+				opts.SkipSkillFiles = true
+			}
 			opts.IncludeOpenCodeBackgroundPolicy = s.backgroundPolicy && adapter.Agent() == model.AgentOpenCode
 			if _, err := injectSDD(targetDir, adapter, s.selection.SDDMode, opts); err != nil {
 				return fmt.Errorf("inject sdd for %q: %w", adapter.Agent(), err)
+			}
+			if s.skillInventory.hasAgent(adapter.Agent()) {
+				if _, err := s.skillInventory.injectSDD(adapter.Agent(), opts.Capability); err != nil {
+					return fmt.Errorf("inject routed SDD skills for %q: %w", adapter.Agent(), err)
+				}
 			}
 		}
 		return nil
@@ -1666,6 +1688,12 @@ func (s componentApplyStep) Run() error {
 			return nil
 		}
 		for _, adapter := range adapters {
+			if s.skillInventory.hasAgent(adapter.Agent()) {
+				if _, err := s.skillInventory.injectOrdinary(adapter.Agent()); err != nil {
+					return fmt.Errorf("inject routed skills for %q: %w", adapter.Agent(), err)
+				}
+				continue
+			}
 			targetDir := componentInjectionDirScoped(s.homeDir, s.workspaceDir, s.scope, adapter)
 			if _, err := skills.Inject(targetDir, adapter, skillIDs); err != nil {
 				return fmt.Errorf("inject skills for %q: %w", adapter.Agent(), err)
@@ -1936,13 +1964,17 @@ func selectedSkillIDs(selection model.Selection) []model.SkillID {
 }
 
 func backupTargets(homeDir, workspaceDir string, scope InstallScope, selection model.Selection, resolved planner.ResolvedPlan) ([]string, error) {
+	return backupTargetsWithSkillInventory(homeDir, workspaceDir, scope, selection, resolved, nil)
+}
+
+func backupTargetsWithSkillInventory(homeDir, workspaceDir string, scope InstallScope, selection model.Selection, resolved planner.ResolvedPlan, skillInventory *routedSkillInventory) ([]string, error) {
 	paths := map[string]struct{}{}
 	adapters := resolveAdapters(resolved.Agents)
 	managesSDDPlugins := false
 
 	for _, component := range resolved.OrderedComponents {
 		managesSDDPlugins = managesSDDPlugins || component == model.ComponentSDD
-		for _, path := range componentPathsWithWorkspaceScoped(homeDir, workspaceDir, scope, selection, adapters, component) {
+		for _, path := range componentPathsWithWorkspaceScopedWithSkillInventory(homeDir, workspaceDir, scope, selection, adapters, component, skillInventory) {
 			paths[path] = struct{}{}
 		}
 		if component == model.ComponentContext7 {
@@ -1989,14 +2021,14 @@ func backupTargets(homeDir, workspaceDir string, scope InstallScope, selection m
 	for _, path := range routingGuidancePaths(homeDir, workspaceDir, scope, adapters) {
 		paths[path] = struct{}{}
 	}
-	adapterSkillPaths, err := adapterSkillBackupTargets(homeDir, workspaceDir, scope, selection, adapters)
+	adapterSkillPaths, err := adapterSkillBackupTargetsWithSkillInventory(homeDir, workspaceDir, scope, selection, adapters, skillInventory)
 	if err != nil {
 		return nil, err
 	}
 	for _, path := range adapterSkillPaths {
 		paths[path] = struct{}{}
 	}
-	if !usesAnchoredCompatibilityTransaction() && needsCompatibilitySkillsRefresh(resolved.OrderedComponents) {
+	if !usesAnchoredCompatibilityTransaction() && needsCompatibilitySkillsRefresh(resolved.OrderedComponents) && !skillInventory.bypassesCompatibilityRefresh() {
 		skillDir, ok, err := compatibilitySkillsDir(homeDir)
 		if err != nil {
 			return nil, err
@@ -2043,9 +2075,16 @@ func backupTargets(homeDir, workspaceDir string, scope InstallScope, selection m
 }
 
 func adapterSkillBackupTargets(homeDir, workspaceDir string, scope InstallScope, selection model.Selection, adapters []agents.Adapter) ([]string, error) {
+	return adapterSkillBackupTargetsWithSkillInventory(homeDir, workspaceDir, scope, selection, adapters, nil)
+}
+
+func adapterSkillBackupTargetsWithSkillInventory(homeDir, workspaceDir string, scope InstallScope, selection model.Selection, adapters []agents.Adapter, skillInventory *routedSkillInventory) ([]string, error) {
 	var paths []string
 	for _, adapter := range adapters {
 		if !adapter.SupportsSkills() {
+			continue
+		}
+		if skillInventory.hasAgent(adapter.Agent()) {
 			continue
 		}
 		skillDir := adapter.SkillsDir(componentInjectionDirScoped(homeDir, workspaceDir, scope, adapter))
@@ -2119,6 +2158,10 @@ func componentPathsWithWorkspace(homeDir, workspaceDir string, selection model.S
 }
 
 func componentPathsWithWorkspaceScoped(homeDir, workspaceDir string, scope InstallScope, selection model.Selection, adapters []agents.Adapter, component model.ComponentID) []string {
+	return componentPathsWithWorkspaceScopedWithSkillInventory(homeDir, workspaceDir, scope, selection, adapters, component, nil)
+}
+
+func componentPathsWithWorkspaceScopedWithSkillInventory(homeDir, workspaceDir string, scope InstallScope, selection model.Selection, adapters []agents.Adapter, component model.ComponentID, skillInventory *routedSkillInventory) []string {
 	paths := []string{}
 	for _, adapter := range adapters {
 		targetDir := componentPathDirScoped(homeDir, workspaceDir, scope, adapter, component)
@@ -2189,7 +2232,9 @@ func componentPathsWithWorkspaceScoped(homeDir, workspaceDir string, scope Insta
 					}
 				}
 			}
-			if adapter.SupportsSkills() {
+			if skillInventory.hasAgent(adapter.Agent()) {
+				paths = append(paths, skillInventory.paths(adapter.Agent(), model.ComponentSDD)...)
+			} else if adapter.SupportsSkills() {
 				skillDir := adapter.SkillsDir(targetDir)
 				if skillDir != "" {
 					// The embedded skills/_shared listing is the single source of
@@ -2221,13 +2266,17 @@ func componentPathsWithWorkspaceScoped(homeDir, workspaceDir string, scope Insta
 			}
 			paths = append(paths, sddSubAgentPaths(targetDir, adapter)...)
 		case model.ComponentSkills:
-			for _, skillID := range selectedSkillIDs(selection) {
-				if skills.IsSDDSkill(skillID) {
-					continue
-				}
-				path := skills.SkillPathForAgent(targetDir, adapter, skillID)
-				if path != "" {
-					paths = append(paths, path)
+			if skillInventory.hasAgent(adapter.Agent()) {
+				paths = append(paths, skillInventory.paths(adapter.Agent(), model.ComponentSkills)...)
+			} else {
+				for _, skillID := range selectedSkillIDs(selection) {
+					if skills.IsSDDSkill(skillID) {
+						continue
+					}
+					path := skills.SkillPathForAgent(targetDir, adapter, skillID)
+					if path != "" {
+						paths = append(paths, path)
+					}
 				}
 			}
 		case model.ComponentContext7:
@@ -2483,12 +2532,13 @@ func openCodeSDDPluginPaths(targetDir string) []string {
 }
 
 type postApplyVerificationInput struct {
-	HomeDir      string
-	WorkspaceDir string
-	Scope        InstallScope
-	Selection    model.Selection
-	Resolved     planner.ResolvedPlan
-	State        *runtimeState
+	HomeDir        string
+	WorkspaceDir   string
+	Scope          InstallScope
+	Selection      model.Selection
+	Resolved       planner.ResolvedPlan
+	State          *runtimeState
+	SkillInventory *routedSkillInventory
 }
 
 func runPostApplyVerification(input postApplyVerificationInput) verify.Report {
@@ -2498,7 +2548,7 @@ func runPostApplyVerification(input postApplyVerificationInput) verify.Report {
 	seenPath := make(map[string]struct{})
 	var uniqueFilePaths []string
 	for _, component := range input.Resolved.OrderedComponents {
-		for _, path := range componentPathsWithWorkspaceScoped(input.HomeDir, input.WorkspaceDir, input.Scope, input.Selection, adapters, component) {
+		for _, path := range componentPathsWithWorkspaceScopedWithSkillInventory(input.HomeDir, input.WorkspaceDir, input.Scope, input.Selection, adapters, component, input.SkillInventory) {
 			if path == "" {
 				continue
 			}
