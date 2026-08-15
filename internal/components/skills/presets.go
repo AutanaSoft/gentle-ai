@@ -17,6 +17,14 @@ var sddSkills = []model.SkillID{
 	model.SkillJudgmentDay,
 }
 
+// SDDSkillIDs returns the managed skill IDs owned by the SDD component. The
+// list also drives presets, keeping the SDD installer and skill selection in
+// one authority. In particular, judgment-day is SDD-owned even though its ID
+// does not use the sdd- prefix.
+func SDDSkillIDs() []model.SkillID {
+	return copySkills(sddSkills)
+}
+
 // foundationSkills are baseline learning skills for the "recommended" tier.
 var foundationSkills = []model.SkillID{
 	model.SkillGoTesting,

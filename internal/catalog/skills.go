@@ -60,3 +60,15 @@ func MVPSkills() []Skill {
 	copy(skills, mvpSkills)
 	return skills
 }
+
+// SkillByID returns the canonical catalog record for id. Callers that need a
+// skill's placement must resolve it here rather than maintaining a parallel
+// SkillID-to-placement map.
+func SkillByID(id model.SkillID) (Skill, bool) {
+	for _, skill := range mvpSkills {
+		if skill.ID == id {
+			return skill, true
+		}
+	}
+	return Skill{}, false
+}

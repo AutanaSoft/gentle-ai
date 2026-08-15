@@ -20,6 +20,19 @@ func IsSDDSkill(id model.SkillID) bool {
 	return strings.HasPrefix(string(id), "sdd-")
 }
 
+// IsSDDManagedSkill reports whether the SDD component owns id. It includes
+// judgment-day, whose name predates the sdd-* convention. Routing uses this
+// ownership-aware helper while the legacy injector keeps its established
+// prefix-based selection behavior.
+func IsSDDManagedSkill(id model.SkillID) bool {
+	for _, sddID := range sddSkills {
+		if id == sddID {
+			return true
+		}
+	}
+	return false
+}
+
 type InjectionResult struct {
 	Changed bool
 	Files   []string

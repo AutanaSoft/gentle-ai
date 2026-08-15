@@ -172,6 +172,18 @@ func TestInjectSkipsSddSkills(t *testing.T) {
 	}
 }
 
+func TestSDDSkillClassificationKeepsLegacyPrefixAndExposesSDDOwnership(t *testing.T) {
+	if IsSDDSkill(model.SkillJudgmentDay) {
+		t.Fatal("judgment-day matched the legacy sdd-* prefix classifier")
+	}
+	if !IsSDDManagedSkill(model.SkillJudgmentDay) {
+		t.Fatal("judgment-day is not recognized as SDD-managed")
+	}
+	if !IsSDDSkill(model.SkillSDDInit) || !IsSDDManagedSkill(model.SkillSDDInit) {
+		t.Fatal("sdd-init must be recognized by both classifiers")
+	}
+}
+
 func TestInjectSkipsUnknownSkillGracefully(t *testing.T) {
 	home := t.TempDir()
 

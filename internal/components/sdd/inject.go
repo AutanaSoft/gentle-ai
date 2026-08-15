@@ -69,6 +69,11 @@ type InjectOptions struct {
 	// (no section extraction, full content written).
 	Capability string
 
+	// SkipSkillFiles leaves the skill-file phase to a caller that has already
+	// resolved explicit destinations. All other SDD assets keep their existing
+	// delivery paths.
+	SkipSkillFiles bool
+
 	// CodeGraphGuidanceMarkdown is the shared CodeGraph search-order guidance to
 	// inject into SDD phase sub-agent prompts. Empty means disabled; normal SDD
 	// installs must leave it empty unless the Community Tool path enabled CodeGraph.
@@ -227,29 +232,34 @@ func overlayAssetPath(sddMode model.SDDModeID) string {
 	return "opencode/sdd-overlay-single.json"
 }
 
-var compatibilitySDDSkillIDs = []model.SkillID{
-	"sdd-init", "sdd-explore", "sdd-propose", "sdd-spec",
-	"sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
-	"sdd-onboard", "judgment-day",
-}
-
 // SkillDirectoryPaths returns every file that InjectSkillDirectory may write.
 func SkillDirectoryPaths(skillDir, capability string) ([]string, error) {
-	sharedFiles, err := assets.SharedSkillFileNames()
-	if err != nil {
-		return nil, fmt.Errorf("resolve SDD shared files: %w", err)
-	}
-	if len(sharedFiles) == 0 {
-		return nil, fmt.Errorf("resolve SDD shared files: embedded %s listing is empty", assets.SharedSkillDir)
-	}
-	paths := make([]string, 0, len(sharedFiles))
-	for _, fileName := range sharedFiles {
-		paths = append(paths, filepath.Join(skillDir, "_shared", fileName))
+	return SkillDirectoryPathsForSkills(skillDir, skills.SDDSkillIDs(), capability, true)
+}
+
+// SkillDirectoryPathsForSkills returns every file written for the supplied
+// SDD skill IDs. Shared support files are included once when includeShared is
+// true, allowing routed materialization to place them once per destination
+// root rather than once per agent.
+func SkillDirectoryPathsForSkills(skillDir string, skillIDs []model.SkillID, capability string, includeShared bool) ([]string, error) {
+	paths := []string{}
+	if includeShared {
+		sharedFiles, err := assets.SharedSkillFileNames()
+		if err != nil {
+			return nil, fmt.Errorf("resolve SDD shared files: %w", err)
+		}
+		if len(sharedFiles) == 0 {
+			return nil, fmt.Errorf("resolve SDD shared files: embedded %s listing is empty", assets.SharedSkillDir)
+		}
+		paths = make([]string, 0, len(sharedFiles))
+		for _, fileName := range sharedFiles {
+			paths = append(paths, filepath.Join(skillDir, "_shared", fileName))
+		}
 	}
 	if capability == "" {
 		capability = "capable"
 	}
-	skillPaths, err := skills.DirectoryPaths(skillDir, compatibilitySDDSkillIDs, capability)
+	skillPaths, err := skills.DirectoryPaths(skillDir, skillIDs, capability)
 	if err != nil {
 		return nil, fmt.Errorf("enumerate SDD skills: %w", err)
 	}
@@ -260,42 +270,57 @@ func SkillDirectoryPaths(skillDir, capability string) ([]string, error) {
 // an already-selected skills directory. It is separate from adapter injection
 // so compatibility paths can be refreshed once per operation.
 func InjectSkillDirectory(skillDir, capability string) (InjectionResult, error) {
-	return InjectSkillDirectoryWithWriter(skillDir, capability, filemerge.WriteFileAtomic)
+	return InjectSkillDirectoryForSkillsWithWriter(skillDir, skills.SDDSkillIDs(), capability, true, filemerge.WriteFileAtomic)
+}
+
+// InjectSkillDirectoryForSkills writes a routed subset of SDD skills to an
+// explicit destination root.
+func InjectSkillDirectoryForSkills(skillDir string, skillIDs []model.SkillID, capability string, includeShared bool) (InjectionResult, error) {
+	return InjectSkillDirectoryForSkillsWithWriter(skillDir, skillIDs, capability, includeShared, filemerge.WriteFileAtomic)
 }
 
 // InjectSkillDirectoryWithWriter refreshes SDD skills with a caller-selected writer.
 func InjectSkillDirectoryWithWriter(skillDir, capability string, writeFile func(string, []byte, fs.FileMode) (filemerge.WriteResult, error)) (InjectionResult, error) {
-	sharedFiles, err := assets.SharedSkillFileNames()
-	if err != nil {
-		return InjectionResult{}, fmt.Errorf("resolve SDD shared files: %w", err)
-	}
-	if len(sharedFiles) == 0 {
-		return InjectionResult{}, fmt.Errorf("resolve SDD shared files: embedded %s listing is empty", assets.SharedSkillDir)
-	}
-	result := InjectionResult{}
-	for _, fileName := range sharedFiles {
-		assetPath := assets.SharedSkillDir + "/" + fileName
-		content, err := assets.Read(assetPath)
-		if err != nil {
-			return InjectionResult{}, fmt.Errorf("required SDD shared file %q: embedded asset not found: %w", fileName, err)
-		}
-		if len(content) == 0 {
-			return InjectionResult{}, fmt.Errorf("required SDD shared file %q: embedded asset is empty", fileName)
-		}
+	return InjectSkillDirectoryForSkillsWithWriter(skillDir, skills.SDDSkillIDs(), capability, true, writeFile)
+}
 
-		path := filepath.Join(skillDir, "_shared", fileName)
-		writeResult, err := writeFile(path, []byte(content), 0o644)
+// InjectSkillDirectoryForSkillsWithWriter writes a routed subset of SDD
+// skills to an explicit destination root. includeShared writes the required
+// _shared support files once for that physical root.
+func InjectSkillDirectoryForSkillsWithWriter(skillDir string, skillIDs []model.SkillID, capability string, includeShared bool, writeFile func(string, []byte, fs.FileMode) (filemerge.WriteResult, error)) (InjectionResult, error) {
+	result := InjectionResult{}
+	if includeShared {
+		sharedFiles, err := assets.SharedSkillFileNames()
 		if err != nil {
-			return InjectionResult{}, err
+			return InjectionResult{}, fmt.Errorf("resolve SDD shared files: %w", err)
 		}
-		result.Changed = result.Changed || writeResult.Changed
-		result.Files = append(result.Files, path)
+		if len(sharedFiles) == 0 {
+			return InjectionResult{}, fmt.Errorf("resolve SDD shared files: embedded %s listing is empty", assets.SharedSkillDir)
+		}
+		for _, fileName := range sharedFiles {
+			assetPath := assets.SharedSkillDir + "/" + fileName
+			content, err := assets.Read(assetPath)
+			if err != nil {
+				return InjectionResult{}, fmt.Errorf("required SDD shared file %q: embedded asset not found: %w", fileName, err)
+			}
+			if len(content) == 0 {
+				return InjectionResult{}, fmt.Errorf("required SDD shared file %q: embedded asset is empty", fileName)
+			}
+
+			path := filepath.Join(skillDir, "_shared", fileName)
+			writeResult, err := writeFile(path, []byte(content), 0o644)
+			if err != nil {
+				return InjectionResult{}, err
+			}
+			result.Changed = result.Changed || writeResult.Changed
+			result.Files = append(result.Files, path)
+		}
 	}
 
 	if capability == "" {
 		capability = "capable"
 	}
-	sddResult, err := skills.InjectDirectoryWithCapabilityWithWriter(skillDir, compatibilitySDDSkillIDs, capability, writeFile)
+	sddResult, err := skills.InjectDirectoryWithCapabilityWithWriter(skillDir, skillIDs, capability, writeFile)
 	if err != nil {
 		return InjectionResult{}, fmt.Errorf("inject SDD skills: %w", err)
 	}
@@ -586,7 +611,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 	}
 
 	// 3. Write SDD skill files (if the agent supports skills).
-	if adapter.SupportsSkills() {
+	if adapter.SupportsSkills() && !opts.SkipSkillFiles {
 		skillDir := adapter.SkillsDir(homeDir)
 		if skillDir != "" {
 			skillResult, skillErr := InjectSkillDirectory(skillDir, opts.Capability)
@@ -806,7 +831,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 		}
 	}
 
-	if adapter.SupportsSkills() {
+	if adapter.SupportsSkills() && !opts.SkipSkillFiles {
 		skillDir := adapter.SkillsDir(homeDir)
 		if skillDir != "" {
 			for _, skill := range []string{"sdd-init", "sdd-apply", "sdd-verify"} {

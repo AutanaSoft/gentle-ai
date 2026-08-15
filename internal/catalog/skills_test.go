@@ -113,3 +113,16 @@ func TestMVPSkillsIncludeRequestedBundledSkillsWithCanonicalNames(t *testing.T) 
 		}
 	}
 }
+
+func TestSkillByID(t *testing.T) {
+	skill, ok := SkillByID(model.SkillGoTesting)
+	if !ok {
+		t.Fatal("SkillByID(go-testing) = not found")
+	}
+	if skill.Placement != SkillPlacementAgentSkillsShared {
+		t.Fatalf("SkillByID(go-testing).Placement = %q, want %q", skill.Placement, SkillPlacementAgentSkillsShared)
+	}
+	if _, ok := SkillByID("unknown-skill"); ok {
+		t.Fatal("SkillByID(unknown-skill) = found, want false")
+	}
+}
