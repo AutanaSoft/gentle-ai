@@ -46,25 +46,21 @@ type routedSkillInjectionResult struct {
 	Files   []string
 }
 
-func buildRoutedSkillInventory(homeDir string, scope InstallScope, selection model.Selection, adapters []agents.Adapter) (*routedSkillInventory, error) {
-	if scope != ScopeGlobal || !selectionHasManagedSkills(selection) {
+func buildRoutedSkillInventory(homeDir string, scope InstallScope, selection model.Selection, activeComponents []model.ComponentID, adapters []agents.Adapter) (*routedSkillInventory, error) {
+	if scope != ScopeGlobal || !selectionHasManagedSkills(activeComponents) {
 		return nil, nil
 	}
-	ordinaryIDs := ordinarySkillIDs(selection)
-	sddIDs := sddSkillIDs(selection)
-	for _, adapter := range adapters {
-		if !adapter.SupportsSkills() && (len(ordinaryIDs) > 0 || len(sddIDs) > 0) {
-			return nil, fmt.Errorf("managed skills for agent %q have no reliable destination", adapter.Agent())
-		}
+	if err := validateSelectedSkillIDs(selection); err != nil {
+		return nil, err
 	}
-
-	// OpenClaw currently resolves all component files under its configured
-	// workspace, irrespective of InstallScope. Passing that directory to a
-	// global SkillDiscoveryProvider would fabricate project roots from global
-	// declarations, so preserve the complete established operation instead.
+	ordinaryIDs := ordinarySkillIDs(selection, activeComponents)
+	sddIDs := sddSkillIDs(activeComponents)
 	for _, adapter := range adapters {
 		if adapter.Agent() == model.AgentOpenClaw {
-			return nil, nil
+			continue
+		}
+		if !adapter.SupportsSkills() && (len(ordinaryIDs) > 0 || len(sddIDs) > 0) {
+			return nil, fmt.Errorf("managed skills for agent %q have no reliable destination", adapter.Agent())
 		}
 	}
 
@@ -74,6 +70,13 @@ func buildRoutedSkillInventory(homeDir string, scope InstallScope, selection mod
 	}
 	hasRoutableAgent := false
 	for _, adapter := range adapters {
+		// OpenClaw resolves all component files under its configured workspace,
+		// irrespective of InstallScope. Passing that directory to a global
+		// SkillDiscoveryProvider would fabricate project roots from global
+		// declarations, so retain its established workspace-first writer only.
+		if adapter.Agent() == model.AgentOpenClaw {
+			continue
+		}
 		if !adapter.SupportsSkills() {
 			continue
 		}
@@ -112,12 +115,21 @@ func buildRoutedSkillInventory(homeDir string, scope InstallScope, selection mod
 	return inventory, nil
 }
 
-func selectionHasManagedSkills(selection model.Selection) bool {
-	return selection.HasComponent(model.ComponentSkills) || selection.HasComponent(model.ComponentSDD)
+func selectionHasManagedSkills(activeComponents []model.ComponentID) bool {
+	return hasComponent(activeComponents, model.ComponentSkills) || hasComponent(activeComponents, model.ComponentSDD)
 }
 
-func ordinarySkillIDs(selection model.Selection) []model.SkillID {
-	if !selection.HasComponent(model.ComponentSkills) {
+func validateSelectedSkillIDs(selection model.Selection) error {
+	for _, id := range selectedSkillIDs(selection) {
+		if _, ok := catalog.SkillByID(id); !ok {
+			return fmt.Errorf("managed skill %q is absent from the canonical catalog", id)
+		}
+	}
+	return nil
+}
+
+func ordinarySkillIDs(selection model.Selection, activeComponents []model.ComponentID) []model.SkillID {
+	if !hasComponent(activeComponents, model.ComponentSkills) {
 		return nil
 	}
 	ids := make([]model.SkillID, 0, len(selectedSkillIDs(selection)))
@@ -126,7 +138,7 @@ func ordinarySkillIDs(selection model.Selection) []model.SkillID {
 		if skills.IsSDDSkill(id) {
 			continue
 		}
-		if selection.HasComponent(model.ComponentSDD) && skills.IsSDDManagedSkill(id) {
+		if hasComponent(activeComponents, model.ComponentSDD) && skills.IsSDDManagedSkill(id) {
 			continue
 		}
 		if _, duplicate := seen[id]; duplicate {
@@ -138,8 +150,8 @@ func ordinarySkillIDs(selection model.Selection) []model.SkillID {
 	return ids
 }
 
-func sddSkillIDs(selection model.Selection) []model.SkillID {
-	if !selection.HasComponent(model.ComponentSDD) {
+func sddSkillIDs(activeComponents []model.ComponentID) []model.SkillID {
+	if !hasComponent(activeComponents, model.ComponentSDD) {
 		return nil
 	}
 	return skills.SDDSkillIDs()

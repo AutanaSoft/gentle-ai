@@ -17,12 +17,18 @@ func TestRoutedSkillInventoryRoutesGlobalSkillsAndAlignsLifecycle(t *testing.T) 
 	home := t.TempDir()
 	selection := model.Selection{
 		Agents:     []model.AgentID{model.AgentOpenCode},
-		Components: []model.ComponentID{model.ComponentSDD, model.ComponentSkills},
+		Components: []model.ComponentID{model.ComponentSkills},
 		Skills:     []model.SkillID{model.SkillGoTesting},
 	}
-	resolved := planner.ResolvedPlan{Agents: selection.Agents, OrderedComponents: selection.Components}
+	resolved, err := planner.NewResolver(planner.MVPGraph()).Resolve(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasComponent(resolved.OrderedComponents, model.ComponentSDD) {
+		t.Fatalf("resolver did not add SDD dependency: %v", resolved.OrderedComponents)
+	}
 	adapters := resolveAdapters(selection.Agents)
-	inventory, err := buildRoutedSkillInventory(home, ScopeGlobal, selection, adapters)
+	inventory, err := buildRoutedSkillInventory(home, ScopeGlobal, selection, resolved.OrderedComponents, adapters)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +45,10 @@ func TestRoutedSkillInventoryRoutesGlobalSkillsAndAlignsLifecycle(t *testing.T) 
 		t.Fatalf("SDD paths do not contain native destination %q", nativeSkill)
 	}
 
-	for _, component := range selection.Components {
+	for _, component := range resolved.OrderedComponents {
+		if component != model.ComponentSDD && component != model.ComponentSkills {
+			continue
+		}
 		step := componentApplyStep{
 			component:      component,
 			homeDir:        home,
@@ -54,7 +63,11 @@ func TestRoutedSkillInventoryRoutesGlobalSkillsAndAlignsLifecycle(t *testing.T) 
 		}
 	}
 
-	for _, path := range []string{sharedSkill, nativeSkill, filepath.Join(home, ".config", "opencode", "skills", "_shared", "sdd-phase-common.md")} {
+	sharedSupport := filepath.Join(home, ".config", "opencode", "skills", "_shared", "sdd-phase-common.md")
+	if !containsPath(inventory.paths(model.AgentOpenCode, model.ComponentSDD), sharedSupport) {
+		t.Fatalf("SDD paths do not contain routed shared support %q", sharedSupport)
+	}
+	for _, path := range []string{sharedSkill, nativeSkill, sharedSupport} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("routed materialization missing %q: %v", path, err)
 		}
@@ -70,7 +83,7 @@ func TestRoutedSkillInventoryRoutesGlobalSkillsAndAlignsLifecycle(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsPath(targets, sharedSkill) || !containsPath(targets, nativeSkill) {
+	if !containsPath(targets, sharedSkill) || !containsPath(targets, nativeSkill) || !containsPath(targets, sharedSupport) {
 		t.Fatalf("routed backup targets missing effective destinations: %v", targets)
 	}
 	if containsPath(targets, filepath.Join(home, ".config", "opencode", "skills", "go-testing", "SKILL.md")) {
@@ -86,6 +99,8 @@ func TestRoutedSkillInventoryRoutesGlobalSkillsAndAlignsLifecycle(t *testing.T) 
 		SkillInventory: inventory,
 	})
 	assertVerificationPathStatus(t, report, "verify:file:"+sharedSkill, verify.CheckStatusPassed)
+	assertVerificationPathStatus(t, report, "verify:file:"+nativeSkill, verify.CheckStatusPassed)
+	assertVerificationPathStatus(t, report, "verify:file:"+sharedSupport, verify.CheckStatusPassed)
 	assertVerificationPathAbsent(t, report, "verify:file:"+filepath.Join(home, ".config", "opencode", "skills", "go-testing", "SKILL.md"))
 	if err := os.Remove(sharedSkill); err != nil {
 		t.Fatal(err)
@@ -108,7 +123,7 @@ func TestRoutedSkillInventoryDrivesSyncAndSkipsCompatibilityRefresh(t *testing.T
 		Components: []model.ComponentID{model.ComponentSDD, model.ComponentSkills},
 		Skills:     []model.SkillID{model.SkillGoTesting},
 	}
-	inventory, err := buildRoutedSkillInventory(home, ScopeGlobal, selection, resolveAdapters(selection.Agents))
+	inventory, err := buildRoutedSkillInventory(home, ScopeGlobal, selection, selection.Components, resolveAdapters(selection.Agents))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +204,109 @@ func TestRoutedSkillInventoryFailsBeforeInstallMutation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".gentle-ai")); !os.IsNotExist(err) {
 		t.Fatalf("failed Pi preflight mutated backup root: %v", err)
+	}
+}
+
+func TestRoutedSkillInventoryRoutesMixedOpenClawAndOpenCode(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	writeOpenClawConfigWithWorkspace(t, home, workspace)
+	selection := model.Selection{
+		Agents:     []model.AgentID{model.AgentOpenClaw, model.AgentOpenCode},
+		Components: []model.ComponentID{model.ComponentSDD, model.ComponentSkills},
+		Skills:     []model.SkillID{model.SkillGoTesting},
+	}
+	resolved := planner.ResolvedPlan{Agents: selection.Agents, OrderedComponents: selection.Components}
+	inventory, err := buildRoutedSkillInventory(home, ScopeGlobal, selection, resolved.OrderedComponents, resolveAdapters(selection.Agents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory == nil || !inventory.hasAgent(model.AgentOpenCode) {
+		t.Fatal("mixed operation did not route OpenCode")
+	}
+	if inventory.hasAgent(model.AgentOpenClaw) {
+		t.Fatal("mixed operation routed OpenClaw instead of preserving its workspace-first writer")
+	}
+
+	installRuntime, err := newInstallRuntime(home, ScopeGlobal, ChannelStable, selection, resolved, system.PlatformProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(installRuntime.state.cleanupCompatibilityTransaction)
+	if stagePlanHasStep(installRuntime.stagePlan(), "component:compatibility-skills-refresh") {
+		t.Fatal("mixed operation schedules compatibility refresh for already-routed OpenCode skills")
+	}
+
+	for _, component := range selection.Components {
+		step := componentApplyStep{
+			component:      component,
+			homeDir:        home,
+			workspaceDir:   workspace,
+			scope:          ScopeGlobal,
+			agents:         selection.Agents,
+			selection:      selection,
+			skillInventory: inventory,
+		}
+		if err := step.Run(); err != nil {
+			t.Fatalf("apply %q: %v", component, err)
+		}
+	}
+
+	openCodeShared := filepath.Join(home, ".agents", "skills", "go-testing", "SKILL.md")
+	openCodeRequired := filepath.Join(home, ".config", "opencode", "skills", "sdd-init", "SKILL.md")
+	openClawShared := filepath.Join(workspace, ".openclaw", "skills", "go-testing", "SKILL.md")
+	openClawRequired := filepath.Join(workspace, ".openclaw", "skills", "sdd-init", "SKILL.md")
+	for _, path := range []string{openCodeShared, openCodeRequired, openClawShared, openClawRequired} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("mixed routed materialization missing %q: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "opencode", "skills", "go-testing", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("mixed operation created OpenCode native duplicate for shared skill: %v", err)
+	}
+
+	targets, err := backupTargetsWithSkillInventory(home, workspace, ScopeGlobal, selection, resolved, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{openCodeShared, openCodeRequired, openClawShared, openClawRequired} {
+		if !containsPath(targets, path) {
+			t.Fatalf("mixed backup targets missing %q: %v", path, targets)
+		}
+	}
+
+	report := runPostApplyVerification(postApplyVerificationInput{
+		HomeDir:        home,
+		WorkspaceDir:   workspace,
+		Scope:          ScopeGlobal,
+		Selection:      selection,
+		Resolved:       resolved,
+		SkillInventory: inventory,
+	})
+	for _, path := range []string{openCodeShared, openCodeRequired, openClawShared, openClawRequired} {
+		assertVerificationPathStatus(t, report, "verify:file:"+path, verify.CheckStatusPassed)
+	}
+}
+
+func TestRoutedSkillInventoryRejectsUnknownSDDPrefixBeforeInstallMutation(t *testing.T) {
+	home := t.TempDir()
+	selection := model.Selection{
+		Agents:     []model.AgentID{model.AgentOpenCode},
+		Components: []model.ComponentID{model.ComponentSkills},
+		Skills:     []model.SkillID{"sdd-unknown"},
+	}
+	resolved, err := planner.NewResolver(planner.MVPGraph()).Resolve(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newInstallRuntime(home, ScopeGlobal, ChannelStable, selection, resolved, system.PlatformProfile{}); err == nil || !strings.Contains(err.Error(), `managed skill "sdd-unknown" is absent from the canonical catalog`) {
+		t.Fatalf("unknown SDD skill preflight error = %v, want canonical catalog failure", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".gentle-ai")); !os.IsNotExist(err) {
+		t.Fatalf("unknown SDD skill preflight created backup root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "sdd-unknown", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("unknown SDD skill preflight wrote managed skill: %v", err)
 	}
 }
 

@@ -678,7 +678,7 @@ func (s *runtimeState) compatibilityChangedFiles() []string {
 
 func newInstallRuntime(homeDir string, scope InstallScope, channel InstallChannel, selection model.Selection, resolved planner.ResolvedPlan, profile system.PlatformProfile) (*installRuntime, error) {
 	adapters := resolveAdapters(resolved.Agents)
-	skillInventory, err := buildRoutedSkillInventory(homeDir, scope, selection, adapters)
+	skillInventory, err := buildRoutedSkillInventory(homeDir, scope, selection, resolved.OrderedComponents, adapters)
 	if err != nil {
 		return nil, err
 	}

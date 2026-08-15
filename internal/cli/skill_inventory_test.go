@@ -15,7 +15,7 @@ func TestRoutedSkillInventoryPreservesWorkspaceAndOpenClawLegacyPaths(t *testing
 		Components: []model.ComponentID{model.ComponentSkills},
 		Skills:     []model.SkillID{model.SkillGoTesting},
 	}
-	inventory, err := buildRoutedSkillInventory(home, ScopeWorkspace, selection, resolveAdapters(selection.Agents))
+	inventory, err := buildRoutedSkillInventory(home, ScopeWorkspace, selection, selection.Components, resolveAdapters(selection.Agents))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestRoutedSkillInventoryPreservesWorkspaceAndOpenClawLegacyPaths(t *testing
 	}
 
 	selection.Agents = []model.AgentID{model.AgentOpenClaw}
-	inventory, err = buildRoutedSkillInventory(home, ScopeGlobal, selection, resolveAdapters(selection.Agents))
+	inventory, err = buildRoutedSkillInventory(home, ScopeGlobal, selection, selection.Components, resolveAdapters(selection.Agents))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestRoutedSkillInventoryUsesCanonicalLookupAndKimiDeclaredRoot(t *testing.T
 		Components: []model.ComponentID{model.ComponentSkills},
 		Skills:     []model.SkillID{"unknown-skill"},
 	}
-	if _, err := buildRoutedSkillInventory(home, ScopeGlobal, unknown, resolveAdapters(unknown.Agents)); err == nil || !strings.Contains(err.Error(), "canonical catalog") {
+	if _, err := buildRoutedSkillInventory(home, ScopeGlobal, unknown, unknown.Components, resolveAdapters(unknown.Agents)); err == nil || !strings.Contains(err.Error(), "canonical catalog") {
 		t.Fatalf("unknown skill error = %v, want canonical catalog failure", err)
 	}
 
@@ -49,7 +49,7 @@ func TestRoutedSkillInventoryUsesCanonicalLookupAndKimiDeclaredRoot(t *testing.T
 		Components: []model.ComponentID{model.ComponentSkills},
 		Skills:     []model.SkillID{model.SkillGoTesting},
 	}
-	inventory, err := buildRoutedSkillInventory(home, ScopeGlobal, kimi, resolveAdapters(kimi.Agents))
+	inventory, err := buildRoutedSkillInventory(home, ScopeGlobal, kimi, kimi.Components, resolveAdapters(kimi.Agents))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestRoutedSkillInventoryFailsClosedWhenPiHasNoReliableDestination(t *testin
 		Agents:     []model.AgentID{model.AgentPi},
 		Components: []model.ComponentID{model.ComponentSDD},
 	}
-	if _, err := buildRoutedSkillInventory(home, ScopeGlobal, selection, resolveAdapters(selection.Agents)); err == nil || !strings.Contains(err.Error(), "no reliable destination") {
+	if _, err := buildRoutedSkillInventory(home, ScopeGlobal, selection, selection.Components, resolveAdapters(selection.Agents)); err == nil || !strings.Contains(err.Error(), "no reliable destination") {
 		t.Fatalf("Pi routed inventory error = %v, want no reliable destination", err)
 	}
 }

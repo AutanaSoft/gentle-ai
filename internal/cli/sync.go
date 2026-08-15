@@ -497,7 +497,7 @@ func newSyncRuntime(homeDir string, selection model.Selection) (*syncRuntime, er
 	workspaceDir, _ := os.Getwd()
 	workspaceDir = resolveOpenClawWorkspaceDir(homeDir, workspaceDir, selection.Agents)
 	adapters := resolveAdapters(selection.Agents)
-	skillInventory, err := buildRoutedSkillInventory(homeDir, ScopeGlobal, selection, adapters)
+	skillInventory, err := buildRoutedSkillInventory(homeDir, ScopeGlobal, selection, selection.Components, adapters)
 	if err != nil {
 		return nil, err
 	}
