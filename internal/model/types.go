@@ -117,6 +117,26 @@ const (
 	SkillGentleAIBench       SkillID = "gentle-ai-bench"
 )
 
+// SkillDiscoveryScope identifies a global skill root by the runtime contract
+// that makes it discoverable. Adapter contracts expose these values through
+// aliases in the agents package without creating adapter import cycles.
+type SkillDiscoveryScope string
+
+const (
+	SkillDiscoverySharedGlobal SkillDiscoveryScope = "shared-global"
+	SkillDiscoveryNativeGlobal SkillDiscoveryScope = "native-global"
+)
+
+type SkillDiscoveryRoot struct {
+	Scope SkillDiscoveryScope
+	Path  string
+}
+
+type SkillDiscoveryCapabilities struct {
+	// Roots are ordered from highest to lowest runtime precedence.
+	Roots []SkillDiscoveryRoot
+}
+
 type PersonaID string
 
 const (

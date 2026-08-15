@@ -60,3 +60,45 @@ type Adapter interface {
 type EffectiveCodeGraphWiringDetector interface {
 	EffectiveCodeGraphWiring(homeDir string) (path string, configured bool)
 }
+
+// Skill discovery contract aliases are defined here so consumers depend on the
+// adapter boundary. Their model storage keeps individual adapter packages from
+// importing this parent package and creating an import cycle.
+type SkillDiscoveryScope = model.SkillDiscoveryScope
+
+const (
+	SkillDiscoverySharedGlobal = model.SkillDiscoverySharedGlobal
+	SkillDiscoveryNativeGlobal = model.SkillDiscoveryNativeGlobal
+)
+
+type SkillDiscoveryRoot = model.SkillDiscoveryRoot
+type SkillDiscoveryCapabilities = model.SkillDiscoveryCapabilities
+
+// SkillDiscoveryProvider is an optional adapter capability for runtimes with
+// verified global roots beyond their native SkillsDir. Roots must be ordered by
+// runtime precedence.
+type SkillDiscoveryProvider interface {
+	SkillDiscovery(homeDir string) SkillDiscoveryCapabilities
+}
+
+// SkillDiscoveryRoots returns declared roots when an adapter provides them.
+// Adapters without the optional capability fall back to their single native
+// skills directory only when generic skills are supported. This function does
+// not inspect or create filesystem paths.
+func SkillDiscoveryRoots(adapter Adapter, homeDir string) []SkillDiscoveryRoot {
+	if provider, ok := adapter.(SkillDiscoveryProvider); ok {
+		roots := provider.SkillDiscovery(homeDir).Roots
+		return append([]SkillDiscoveryRoot(nil), roots...)
+	}
+
+	if !adapter.SupportsSkills() {
+		return nil
+	}
+	if skillsDir := adapter.SkillsDir(homeDir); skillsDir != "" {
+		return []SkillDiscoveryRoot{{
+			Scope: SkillDiscoveryNativeGlobal,
+			Path:  skillsDir,
+		}}
+	}
+	return nil
+}

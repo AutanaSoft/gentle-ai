@@ -97,6 +97,13 @@ func (a *Adapter) SkillsDir(homeDir string) string {
 	return filepath.Join(homeDir, ".codex", "skills")
 }
 
+func (a *Adapter) SkillDiscovery(homeDir string) model.SkillDiscoveryCapabilities {
+	return model.SkillDiscoveryCapabilities{Roots: []model.SkillDiscoveryRoot{
+		{Scope: model.SkillDiscoveryNativeGlobal, Path: a.SkillsDir(homeDir)},
+		{Scope: model.SkillDiscoverySharedGlobal, Path: filepath.Join(homeDir, ".agents", "skills")},
+	}}
+}
+
 func (a *Adapter) SettingsPath(_ string) string {
 	// Codex has no known settings.json path; permissions component skips nil-overlay agents.
 	return ""

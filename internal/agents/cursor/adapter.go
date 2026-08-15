@@ -81,6 +81,13 @@ func (a *Adapter) SkillsDir(homeDir string) string {
 	return filepath.Join(homeDir, ".cursor", "skills")
 }
 
+func (a *Adapter) SkillDiscovery(homeDir string) model.SkillDiscoveryCapabilities {
+	return model.SkillDiscoveryCapabilities{Roots: []model.SkillDiscoveryRoot{
+		{Scope: model.SkillDiscoveryNativeGlobal, Path: a.SkillsDir(homeDir)},
+		{Scope: model.SkillDiscoverySharedGlobal, Path: filepath.Join(homeDir, ".agents", "skills")},
+	}}
+}
+
 func (a *Adapter) SettingsPath(homeDir string) string {
 	return filepath.Join(homeDir, ".cursor", "settings.json")
 }

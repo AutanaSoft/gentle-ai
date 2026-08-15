@@ -91,6 +91,13 @@ func (a *Adapter) SkillsDir(homeDir string) string {
 	return filepath.Join(a.GlobalConfigDir(homeDir), "skills")
 }
 
+func (a *Adapter) SkillDiscovery(homeDir string) model.SkillDiscoveryCapabilities {
+	return model.SkillDiscoveryCapabilities{Roots: []model.SkillDiscoveryRoot{
+		{Scope: model.SkillDiscoveryNativeGlobal, Path: a.SkillsDir(homeDir)},
+		{Scope: model.SkillDiscoverySharedGlobal, Path: filepath.Join(homeDir, ".agents", "skills")},
+	}}
+}
+
 // SettingsPath returns the platform-specific editor settings.json.
 func (a *Adapter) SettingsPath(homeDir string) string {
 	return filepath.Join(a.windsurfUserDir(homeDir), "settings.json")

@@ -36,6 +36,51 @@ func TestMVPSkillsNoDuplicates(t *testing.T) {
 	}
 }
 
+func TestMVPSkillsHaveCompletePlacementInventory(t *testing.T) {
+	want := map[model.SkillID]SkillPlacement{
+		model.SkillSDDInit:             SkillPlacementAgentSkillsRequired,
+		model.SkillSDDExplore:          SkillPlacementAgentSkillsRequired,
+		model.SkillSDDPropose:          SkillPlacementAgentSkillsRequired,
+		model.SkillSDDSpec:             SkillPlacementAgentSkillsRequired,
+		model.SkillSDDDesign:           SkillPlacementAgentSkillsRequired,
+		model.SkillSDDTasks:            SkillPlacementAgentSkillsRequired,
+		model.SkillSDDApply:            SkillPlacementAgentSkillsRequired,
+		model.SkillSDDVerify:           SkillPlacementAgentSkillsRequired,
+		model.SkillSDDArchive:          SkillPlacementAgentSkillsRequired,
+		model.SkillSDDOnboard:          SkillPlacementAgentSkillsRequired,
+		model.SkillJudgmentDay:         SkillPlacementAgentSkillsRequired,
+		model.SkillSkillRegistry:       SkillPlacementAgentSkillsRequired,
+		model.SkillChainedPR:           SkillPlacementAgentSkillsRequired,
+		model.SkillGoTesting:           SkillPlacementAgentSkillsShared,
+		model.SkillGentleAIBench:       SkillPlacementAgentSkillsShared,
+		model.SkillCreator:             SkillPlacementAgentSkillsShared,
+		model.SkillImprover:            SkillPlacementAgentSkillsShared,
+		model.SkillBranchPR:            SkillPlacementAgentSkillsShared,
+		model.SkillIssueCreation:       SkillPlacementAgentSkillsShared,
+		model.SkillCognitiveDoc:        SkillPlacementAgentSkillsShared,
+		model.SkillCommentWriter:       SkillPlacementAgentSkillsShared,
+		model.SkillWorkUnitCommits:     SkillPlacementAgentSkillsShared,
+		model.SkillRDDDefectWorkflow:   SkillPlacementAgentSkillsShared,
+		model.SkillSystemicIssueTriage: SkillPlacementAgentSkillsShared,
+	}
+
+	skills := MVPSkills()
+	if len(skills) != len(want) {
+		t.Fatalf("MVPSkills() has %d entries, want %d", len(skills), len(want))
+	}
+
+	for _, skill := range skills {
+		if !skill.Placement.Valid() {
+			t.Errorf("skill %q has invalid or zero placement %q", skill.ID, skill.Placement)
+		}
+		if got, ok := want[skill.ID]; !ok {
+			t.Errorf("unexpected catalog skill %q", skill.ID)
+		} else if skill.Placement != got {
+			t.Errorf("skill %q placement = %q, want %q", skill.ID, skill.Placement, got)
+		}
+	}
+}
+
 func TestMVPSkillsIncludeRequestedBundledSkillsWithCanonicalNames(t *testing.T) {
 	required := map[model.SkillID]string{
 		model.SkillCreator:             "skill-creator",
